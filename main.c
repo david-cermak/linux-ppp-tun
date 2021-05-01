@@ -9,9 +9,9 @@
 #include "lwip/dns.h"
 #include "errno.h"
 
+void ppp_init(void);
 
-static void
-ppp_link_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
+static void ppp_link_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
 {
     struct netif *pppif = ppp_netif(pcb);
     LWIP_UNUSED_ARG(ctx);
@@ -104,24 +104,18 @@ static u32_t ppp_output_cb(struct ppp_pcb_s *pcb, const void *data, u32_t len, v
     return sio_write(fd, data, len);
 }
 
-static uint8_t sio_buffer[128];
-static int sio_fd;
-static int tun_fd;
-static struct netif pppos_netif;
-static ppp_pcb *ppp;
-
-static void ppp_init(void *arg)
-{
-    sys_sem_t *init_sem = (sys_sem_t*)arg;
-    ppp = pppos_create(&pppos_netif, ppp_output_cb, ppp_link_status_cb, (void*)(long)sio_fd);
-    ppp_connect(ppp, 0);
-    sys_sem_signal(init_sem);
-}
 
 int main(int argc, char *argv[])
 {
+    uint8_t sio_buffer[128];
+    int sio_fd;
+    int tun_fd;
+    struct netif pppos_netif;
+    ppp_pcb *ppp;
+
     if (argc != 3) {
-        printf("Usage: pppos_tun <SIO-device> <TUN-device>\n");
+        printf("Usage: uart-ppp-tun <SIO-device> <TUN-device>\n");
+        printf("Example: uart-ppp-tun /dev/ttyUSB0 tun0\n");
         return 1;
     }
     sio_fd = sio_init(argv[1]); // /dev/ttyUSB0
@@ -138,16 +132,20 @@ int main(int argc, char *argv[])
         printf("failed to create init_sem");
         return 2;
     }
-    tcpip_init(ppp_init, &init_sem);
-    /* we have to wait for initialization to finish before
-     * calling update_adapter()! */
-    sys_sem_wait(&init_sem);
-    sys_sem_free(&init_sem);
 
+    // Init necessary units of lwip (no need for the tcpip thread)
+    sys_init();
+    mem_init();
+    memp_init();
+    netif_init();
+    dns_init();
+    ppp_init();
+    sys_timeouts_init();
 
+    // init and start connection attempts on PPP interface
+    ppp = pppos_create(&pppos_netif, ppp_output_cb, ppp_link_status_cb, (void*)(long)sio_fd);
+    ppp_connect(ppp, 0);
 
-    printf("The argument supplied is %s\n", argv[1]);
-    printf("The argument supplied is %s\n", argv[2]);
     fd_set fds;
     int fmax = MAX(tun_fd, sio_fd) + 1;
 
@@ -155,8 +153,15 @@ int main(int argc, char *argv[])
         FD_ZERO(&fds);
         FD_SET(tun_fd, &fds);
         FD_SET(sio_fd, &fds);
+        struct timeval tv = { .tv_usec = 0, .tv_sec = 1 };
 
-        select(fmax, &fds, NULL, NULL, NULL);
+        if (select(fmax, &fds, NULL, NULL, &tv) < 0) {
+            printf("select failed with errno:%i :%s\n", errno, strerror(errno));
+            return -1;
+        }
+
+        sys_check_timeouts();
+
         if (FD_ISSET(tun_fd, &fds)) {
             if (tun_read(tun_fd, &pppos_netif) < 0) {
                 printf("Failed to read from tun interface\n");
@@ -164,6 +169,7 @@ int main(int argc, char *argv[])
                 return -1;
             }
         }
+
         if (FD_ISSET(sio_fd, &fds)) {
             int len = sio_read(sio_fd, sio_buffer, sizeof(sio_buffer));
             if (len < 0) {
@@ -171,7 +177,7 @@ int main(int argc, char *argv[])
                 printf("errno:%i :%s\n", errno, strerror(errno));
                 return -1;
             }
-            pppos_input_tcpip(ppp, sio_buffer, len);
+            pppos_input(ppp, sio_buffer, len);
         }
     }
     return 0;

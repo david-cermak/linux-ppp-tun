@@ -1,0 +1,2 @@
+sudo ip tuntap add mode tun user `whoami`
+sudo ip link set dev tun0 up
