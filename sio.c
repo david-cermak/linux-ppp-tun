@@ -44,7 +44,6 @@ int sio_init( char * device)
 
 int sio_write(int fd, const uint8_t *buf, size_t size)
 {
-    printf("writting to SIO %d", size);
     return write(fd, buf, size);
 }
 

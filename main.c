@@ -157,7 +157,7 @@ int main(int argc, char *argv[])
 
         if (select(fmax, &fds, NULL, NULL, &tv) < 0) {
             printf("select failed with errno:%i :%s\n", errno, strerror(errno));
-            return -1;
+            goto cleanup;
         }
 
         sys_check_timeouts();
@@ -166,7 +166,7 @@ int main(int argc, char *argv[])
             if (tun_read(tun_fd, &pppos_netif) < 0) {
                 printf("Failed to read from tun interface\n");
                 printf("errno:%i :%s\n", errno, strerror(errno));
-                return -1;
+                goto cleanup;
             }
         }
 
@@ -175,10 +175,14 @@ int main(int argc, char *argv[])
             if (len < 0) {
                 printf("Failed to read from SIO interface\n");
                 printf("errno:%i :%s\n", errno, strerror(errno));
-                return -1;
+                goto cleanup;
             }
             pppos_input(ppp, sio_buffer, len);
         }
     }
     return 0;
+
+cleanup:
+    tun_deinit(tun_fd);
+    return -1;
 }
